@@ -3,6 +3,10 @@
 
 
 #include <time.h> 
+#include <pthread.h>
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
 
 
 struct cacheNode{
@@ -13,9 +17,14 @@ struct cacheNode{
     struct cacheNode* next; 
 };
 
+extern struct cacheNode* head;
+extern int cacheSize;
+extern pthread_mutex_t mutex;
+
+
 struct cacheNode* findCacheEle(char* url);
 int addCacheEle(char* data, int size, char* url);
-int removeCacheEle(); //return 1 on success & 0 on failure
+void removeCacheEle(); 
 
 
 #endif

@@ -1,5 +1,7 @@
 CC = gcc
-CFLAGS = -Wall 
+CFLAGS = -Wall -g -pthread
+
+PORT ?= 8080
 
 SRCDIR = src
 INCDIR = include
@@ -27,4 +29,5 @@ clean:
 
 .PHONY: run
 run: $(TARGET)
-	./$(TARGET)
+	./$(TARGET) $(PORT)
+

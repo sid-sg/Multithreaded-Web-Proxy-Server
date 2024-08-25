@@ -2,17 +2,79 @@
 #include "../include/server.h"
 #include "../include/cache.h"
 
-#define MAX_CLIENTS 10
+#define MAX_CLIENTS 50
 #define MAX_BUFFER_BYTES 4096 
 
 int portNo = 8080; //to-do: by default make the server assign a random port no. available on system
 int proxySocketId;
 pthread_t threadID[MAX_CLIENTS];
 sem_t countingSemaphore;
-pthread_mutex_t mutex;
 
-struct cacheNode* head;
-int cacheSize;
+
+int sendErrorMessage(int socket, int status_code)
+{
+	char str[1024];
+	char currentTime[50];
+	time_t now = time(0);
+
+	struct tm data = *gmtime(&now);
+	strftime(currentTime,sizeof(currentTime),"%a, %d %b %Y %H:%M:%S %Z", &data);
+
+	switch(status_code)
+	{
+		case 400: snprintf(str, sizeof(str), "HTTP/1.1 400 Bad Request\r\nContent-Length: 95\r\nConnection: keep-alive\r\nContent-Type: text/html\r\nDate: %s\r\nServer: VaibhavN/14785\r\n\r\n<HTML><HEAD><TITLE>400 Bad Request</TITLE></HEAD>\n<BODY><H1>400 Bad Rqeuest</H1>\n</BODY></HTML>", currentTime);
+				  printf("400 Bad Request\n");
+				  send(socket, str, strlen(str), 0);
+				  break;
+
+		case 403: snprintf(str, sizeof(str), "HTTP/1.1 403 Forbidden\r\nContent-Length: 112\r\nContent-Type: text/html\r\nConnection: keep-alive\r\nDate: %s\r\nServer: VaibhavN/14785\r\n\r\n<HTML><HEAD><TITLE>403 Forbidden</TITLE></HEAD>\n<BODY><H1>403 Forbidden</H1><br>Permission Denied\n</BODY></HTML>", currentTime);
+				  printf("403 Forbidden\n");
+				  send(socket, str, strlen(str), 0);
+				  break;
+
+		case 404: snprintf(str, sizeof(str), "HTTP/1.1 404 Not Found\r\nContent-Length: 91\r\nContent-Type: text/html\r\nConnection: keep-alive\r\nDate: %s\r\nServer: VaibhavN/14785\r\n\r\n<HTML><HEAD><TITLE>404 Not Found</TITLE></HEAD>\n<BODY><H1>404 Not Found</H1>\n</BODY></HTML>", currentTime);
+				  printf("404 Not Found\n");
+				  send(socket, str, strlen(str), 0);
+				  break;
+
+		case 500: snprintf(str, sizeof(str), "HTTP/1.1 500 Internal Server Error\r\nContent-Length: 115\r\nConnection: keep-alive\r\nContent-Type: text/html\r\nDate: %s\r\nServer: VaibhavN/14785\r\n\r\n<HTML><HEAD><TITLE>500 Internal Server Error</TITLE></HEAD>\n<BODY><H1>500 Internal Server Error</H1>\n</BODY></HTML>", currentTime);
+				  printf("500 Internal Server Error\n");
+				  send(socket, str, strlen(str), 0);
+				  break;
+
+		case 501: snprintf(str, sizeof(str), "HTTP/1.1 501 Not Implemented\r\nContent-Length: 103\r\nConnection: keep-alive\r\nContent-Type: text/html\r\nDate: %s\r\nServer: VaibhavN/14785\r\n\r\n<HTML><HEAD><TITLE>404 Not Implemented</TITLE></HEAD>\n<BODY><H1>501 Not Implemented</H1>\n</BODY></HTML>", currentTime);
+				  printf("501 Not Implemented\n");
+				  send(socket, str, strlen(str), 0);
+				  break;
+
+		case 505: snprintf(str, sizeof(str), "HTTP/1.1 505 HTTP Version Not Supported\r\nContent-Length: 125\r\nConnection: keep-alive\r\nContent-Type: text/html\r\nDate: %s\r\nServer: VaibhavN/14785\r\n\r\n<HTML><HEAD><TITLE>505 HTTP Version Not Supported</TITLE></HEAD>\n<BODY><H1>505 HTTP Version Not Supported</H1>\n</BODY></HTML>", currentTime);
+				  printf("505 HTTP Version Not Supported\n");
+				  send(socket, str, strlen(str), 0);
+				  break;
+
+		default:  return -1;
+
+	}
+	return 1;
+}
+
+int checkHTTPversion(char *msg)
+{
+	int version = -1;
+
+	if(strncmp(msg, "HTTP/1.1", 8) == 0)
+	{
+		version = 1;
+	}
+	else if(strncmp(msg, "HTTP/1.0", 8) == 0)			
+	{
+		version = 1;										
+	}
+	else
+		version = -1;
+
+	return version;
+}
 
 int connectRemoteServer(char* hostAddress, int endServerPort){
     int remoteSocketID = socket(AF_INET, SOCK_STREAM, 0);
@@ -22,14 +84,23 @@ int connectRemoteServer(char* hostAddress, int endServerPort){
     }   
     struct hostent* host = gethostbyname(hostAddress);
     if(host == NULL){
-        prinf("no such host exist\n");
+        printf("no such host exist\n");
         return -1;
     } 
 
     struct sockaddr_in serverAddress;
     memset(&serverAddress, 0, sizeof(serverAddress));
     serverAddress.sin_family = AF_INET;
-    serverAddress.sin_port = hton(endServerPort);
+    serverAddress.sin_port = htons(endServerPort);
+
+    memcpy( (char*)&serverAddress.sin_addr.s_addr, (char*)host->h_addr,host->h_length);
+    
+    if( connect(remoteSocketID, (struct sockaddr*)&serverAddress, (socklen_t)sizeof(serverAddress)) == -1 ){
+        printf("error in connecting remote server\n");
+        return -1;
+    }
+
+    return remoteSocketID;
 }
 
 int handleRequest(int clientSocketID, struct ParsedRequest *request, char* recievedBuffer ){
@@ -62,6 +133,41 @@ int handleRequest(int clientSocketID, struct ParsedRequest *request, char* recie
     }
 
     int remoteSocketID = connectRemoteServer(request->host, endServerPort);
+    if(remoteSocketID == -1){
+        return -1;
+    }
+
+    int bytesSend = send(remoteSocketID, buffer, strlen(buffer), 0);
+    memset(buffer, 0, MAX_BUFFER_BYTES);
+
+    bytesSend = recv(remoteSocketID, buffer, MAX_BUFFER_BYTES-1, 0);
+    char *tempBuffer = (char*)malloc(sizeof(char)*MAX_BUFFER_BYTES);
+    int tempIdx = 0;
+    
+    while(bytesSend>0){
+        bytesSend = send(clientSocketID, buffer, bytesSend, 0);
+        if(bytesSend==-1){
+            printf("failed sending\n");
+            break;
+        }
+        int size = bytesSend/sizeof(char);
+        for(int i=0;i<size;i++){
+            tempBuffer[tempIdx] = buffer[i];
+            tempIdx++;
+        }
+
+        tempBuffer = (char*)realloc(tempBuffer, MAX_BUFFER_BYTES);
+        memset(buffer, 0, MAX_BUFFER_BYTES);
+        
+        bytesSend = recv(remoteSocketID, buffer, MAX_BUFFER_BYTES-1, 0);
+    }
+    tempBuffer[tempIdx] = '\0';
+    free(buffer);
+    addCacheEle(tempBuffer, strlen(tempBuffer), recievedBuffer);
+    free(tempBuffer);
+    close(remoteSocketID);
+
+    return 0;
 }
 
 void* threadFunction(void* newSocketID){
@@ -69,7 +175,7 @@ void* threadFunction(void* newSocketID){
 
     int semaphoreValue;
     sem_getvalue(&countingSemaphore, &semaphoreValue);
-    printf("Semaphore value: %d",semaphoreValue);
+    printf("Semaphore value: %d\n",semaphoreValue);
 
     int* connectedClientIDSocketAddress = (int*) newSocketID;
     int connnectedClientSocketID = *connectedClientIDSocketAddress;
@@ -87,7 +193,7 @@ void* threadFunction(void* newSocketID){
     int lengthRecieved;
 
     while(noOfBytesRecieved>0){
-        if( strstr(buffer, "\r\n\r\r") == NULL ){ 
+        if( strstr(buffer, "\r\n\r\n") == NULL ){ 
             lengthRecieved = strlen(buffer);
             noOfBytesRecieved = recv(connnectedClientSocketID, buffer+lengthRecieved, MAX_BUFFER_BYTES-lengthRecieved, 0); 
             // if(noOfBytesRecieved == -1){
@@ -100,15 +206,19 @@ void* threadFunction(void* newSocketID){
         }
     }
 
+	printf("no of bytes recv: %d\n", noOfBytesRecieved);
+	printf("buffer recieved: %s\n",buffer);
+
     char *recievedBuffer = (char*) malloc( strlen(buffer)*sizeof(char)+1 );
     for(int i=0;i<strlen(buffer);i++){
         recievedBuffer[i] = buffer[i];
     }
     recievedBuffer[strlen(buffer)-1] = '\0';
 
-    struct cacheNode* cacheElement = find(recievedBuffer);
+    struct cacheNode* cacheElement = findCacheEle(recievedBuffer);
 
     if(cacheElement != NULL){ //found in cache
+	   printf("found in cache\n");	
        int dataSize = cacheElement->dataLength/sizeof(char);
        int pos = 0;
        char response[MAX_BUFFER_BYTES];
@@ -121,7 +231,7 @@ void* threadFunction(void* newSocketID){
 
             if( send(connnectedClientSocketID, response, MAX_BUFFER_BYTES, 0) == -1 ){
                 printf("sem init failed"); //todo: change pritf to something else remated to error handling
-                exit(1);
+                // exit(1);
             }
        }
 
@@ -129,6 +239,7 @@ void* threadFunction(void* newSocketID){
        printf("%*s\n\n",MAX_BUFFER_BYTES,cacheElement->data); 
     }
     else if(noOfBytesRecieved>0){ //not found in cache
+        printf("not found in cache\n");
 
         struct ParsedRequest* request = ParsedRequest_create();
         if( ParsedRequest_parse(request, buffer, strlen(buffer)) == -1 ){
@@ -137,7 +248,7 @@ void* threadFunction(void* newSocketID){
         else{
             memset(buffer, 0, MAX_BUFFER_BYTES);
 
-            if( strcmp(request->method,"GET") ){
+            if( strcmp(request->method,"GET") == 0 ){
                 if( request->host && request->path && checkHTTPversion(request->version) == 1 ){
                     noOfBytesRecieved = handleRequest(connnectedClientSocketID, request, recievedBuffer);
                     if(noOfBytesRecieved == -1){
@@ -164,7 +275,7 @@ void* threadFunction(void* newSocketID){
     free(recievedBuffer);
 
     sem_post(&countingSemaphore);
-    sem_getvalue(&countingSemaphore, semaphoreValue);
+    sem_getvalue(&countingSemaphore, &semaphoreValue);
     printf("Semaphore post value: %d", semaphoreValue);
 
     return NULL;
@@ -180,7 +291,6 @@ int main(int argc, char* argv[]){
         printf("sem init failed"); //todo: change pritf to something else remated to error handling
         exit(1);
     }      
-
     if( pthread_mutex_init(&mutex, NULL) ){
         printf("mutex init failed"); //todo: change pritf to something else remated to error handling
         exit(1);
@@ -189,10 +299,10 @@ int main(int argc, char* argv[]){
     if(argc == 2){
         portNo = atoi(argv[1]);
     }
-    else{
-        printf("port no. not provided\n"); //todo: change pritf to something else remated to error handling
-        exit(1);
-    } 
+    // else{
+    //     printf("port no. not provided\n"); //todo: change pritf to something else remated to error handling
+    //     exit(1);
+    // } 
 
     printf("Starting Proxy Server at Port: %d\n", portNo);
 
@@ -246,7 +356,7 @@ int main(int argc, char* argv[]){
         char IPstr[INET_ADDRSTRLEN];
         inet_ntop(AF_INET, &ipAddress, IPstr, INET_ADDRSTRLEN);
         
-        printf("Client connected with Port Number: %d & IP Address: %s\n",ntohs(portNo), IPstr);
+        printf("\nClient connected with Port Number: %d & IP Address: %s\n",ntohs(portNo), IPstr);
 
         pthread_create( &threadID[clientNumber], NULL, threadFunction, (void*)&connectedSocketIDs[clientNumber] );    
         clientNumber++;
